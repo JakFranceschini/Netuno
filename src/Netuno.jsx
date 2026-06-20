@@ -4,14 +4,9 @@ import { useState, useEffect, useMemo } from "react";
 // CONSTANTES & DADOS INICIAIS
 // ─────────────────────────────────────────────
 
-const STORAGE_KEY = "financy_transactions";
+const SHEET_API_URL = "https://script.google.com/macros/s/AKfycbwrQ90ugB7nIwi-_FjD-MAVEhGyphcwWVNEamgJrAML-G8wlZ-y4gWkDw0vm-hF56Ekfg/exec";
 
-const INITIAL_TRANSACTIONS = [
-  { id: 1, name: "Salário",      value: 5000, type: "income",  date: "2025-06-01" },
-  { id: 2, name: "Aluguel",      value: 1200, type: "expense", date: "2025-06-05" },
-  { id: 3, name: "Freelance",    value: 800,  type: "income",  date: "2025-06-10" },
-  { id: 4, name: "Supermercado", value: 450,  type: "expense", date: "2025-06-12" },
-];
+const INITIAL_TRANSACTIONS = [];
 
 const FILTER_TABS = [
   ["all",     "Todas"   ],
@@ -23,17 +18,26 @@ const FILTER_TABS = [
 // UTILITÁRIOS
 // ─────────────────────────────────────────────
 
-function loadTransactions() {
+async function loadTransactions() {
   try {
-    const raw = localStorage.getItem(STORAGE_KEY);
-    return raw ? JSON.parse(raw) : INITIAL_TRANSACTIONS;
+    const res = await fetch(SHEET_API_URL);
+    const data = await res.json();
+    return Array.isArray(data) ? data : INITIAL_TRANSACTIONS;
   } catch {
     return INITIAL_TRANSACTIONS;
   }
 }
 
-function saveTransactions(data) {
-  localStorage.setItem(STORAGE_KEY, JSON.stringify(data));
+async function saveTransactions(data) {
+  try {
+    await fetch(SHEET_API_URL, {
+      method: "POST",
+      headers: { "Content-Type": "text/plain;charset=utf-8" }, // evita preflight CORS
+      body: JSON.stringify(data),
+    });
+  } catch (err) {
+    console.error("Erro ao salvar na planilha:", err);
+  }
 }
 
 function formatCurrency(value) {
@@ -168,6 +172,27 @@ const styles = `
 
   .header-welcome { font-size: 11px; color: rgba(255,255,255,0.32); letter-spacing: 0.6px; }
   .header-name    { font-size: 22px; font-weight: 700; color: rgba(255,255,255,0.92); }
+
+  /* ── TELA DE CARREGAMENTO ── */
+  .loading-screen {
+    display: flex; flex-direction: column; align-items: center; justify-content: center;
+    min-height: 100vh; padding: 10px; gap: 22px;
+  }
+  .loading-logo { width: 72px; height: 72px; object-fit: contain; animation: pulse 1.8s ease-in-out infinite; }
+  .spinner {
+    width: 34px; height: 34px;
+    border-radius: 50%;
+    border: 3px solid rgba(255,255,255,0.18);
+    border-top-color: rgba(120,190,255,0.95);
+    box-shadow: 0 0 16px 2px rgba(100,180,255,0.55), 0 0 32px 6px rgba(80,150,255,0.25);
+    animation: spin 0.8s linear infinite;
+  }
+  .loading-text { font-size: 13px; color: rgba(255,255,255,0.45); letter-spacing: 0.4px; }
+  @keyframes spin { to { transform: rotate(360deg); } }
+  @keyframes pulse {
+    0%, 100% { opacity: 1; transform: scale(1); }
+    50% { opacity: 0.7; transform: scale(0.94); }
+  }
 
   /* Botão circular glass (header) */
   .hbtn {
@@ -401,8 +426,8 @@ const styles = `
   .ctx-btn.danger { color: rgba(230,100,100,0.9); }
   .ctx-btn svg { flex-shrink: 0; }
 
-  .empty      { padding: 40px 0; color: rgba(255,255,255,0.18); font-size: 13px; }
-  .empty-icon { font-size: 32px; margin-bottom: 10px; opacity: 0.4; }
+  .empty      { padding: 40px 0; color: rgba(255,255,255,0.22); font-size: 16px; }
+  .empty-sub  { font-size: 13px; color: rgba(255,255,255,0.16); margin-top: 8px; }
 
   /* ── MODAL (bottom sheet) ── */
   .overlay {
@@ -502,8 +527,8 @@ function TxList({ items, onEdit, onDelete }) {
   if (!items.length) {
     return (
       <div className="empty">
-        <div className="empty-icon">📭</div>
         Nenhum lançamento encontrado
+        <div className="empty-sub">Clique no + para adicionar</div>
       </div>
     );
   }
@@ -568,15 +593,29 @@ const VIEW_TITLES = {
 };
 
 export default function Financy() {
-  const [transactions, setTransactions] = useState(loadTransactions);
+  const [transactions, setTransactions] = useState([]);
+  const [loading,      setLoading     ] = useState(true);
+  const [syncing,      setSyncing     ] = useState(false);
   const [view,         setView        ] = useState("home");
   const [filterTab,    setFilterTab   ] = useState("all");
   const [modalOpen,    setModalOpen   ] = useState(false);
   const [editingId,    setEditingId   ] = useState(null);
   const [form,         setForm        ] = useState(EMPTY_FORM);
 
-  // Persiste no localStorage sempre que as transações mudam
-  useEffect(() => { saveTransactions(transactions); }, [transactions]);
+  // Carrega os dados da planilha do Google ao abrir o app
+  useEffect(() => {
+    loadTransactions().then(data => {
+      setTransactions(data);
+      setLoading(false);
+    });
+  }, []);
+
+  // Salva na planilha sempre que as transações mudam (exceto no carregamento inicial)
+  useEffect(() => {
+    if (loading) return;
+    setSyncing(true);
+    saveTransactions(transactions).finally(() => setSyncing(false));
+  }, [transactions, loading]);
 
   // Totais calculados apenas quando transactions muda
   const totals = useMemo(() => {
@@ -662,6 +701,24 @@ export default function Financy() {
 
   const filteredList = getFilteredList();
   const viewTitle    = VIEW_TITLES[view] ?? "Todas";
+
+  if (loading) {
+    return (
+      <>
+        <style>{styles}</style>
+        <div className="app">
+          <div className="blob blob-1" />
+          <div className="blob blob-2" />
+          <div className="blob blob-3" />
+          <div className="content loading-screen">
+            <img src="/assets/logo.png" alt="Netuno" className="loading-logo" />
+            <div className="spinner" />
+            <div className="loading-text">Carregando dados...</div>
+          </div>
+        </div>
+      </>
+    );
+  }
 
   // ── Render ──
 
